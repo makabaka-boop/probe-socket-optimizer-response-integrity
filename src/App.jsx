@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useCallback } from 'react';
 import MatrixGrid from './components/MatrixGrid.jsx';
+import { verifySolveResponse } from './verifySolveResponse.js';
 
 const MAX_N = 400;
 const MAX_COST = 1_000_000_000_000;
@@ -84,17 +85,44 @@ export default function App() {
       });
       const data = await resp.json().catch(() => null);
       if (resp.ok && data && data.status === 'ok') {
-        // 标记与方案来自同一次响应；缺字段（异常/旧服务）时不臆造，整体不展示标记。
-        const pairFlags = Array.isArray(data.pairFlags) ? data.pairFlags : null;
-        setResult({
-          assignment: data.assignment,
-          totalCost: data.totalCost,
-          elapsedMs: Math.round(performance.now() - started),
-          pairFlags,
+        // 协议验收：只采用属于当前矩阵、结构完整且能精确复算的成功响应。
+        // 缺 n 匹配/短行/重复列/越界列/禁配格/总价不符/标记畸形等一律拒绝，
+        // 不成为可操作方案、不留旧高亮、不允许继续排除。
+        const verdict = verifySolveResponse(data, n, costs);
+        if (verdict.ok) {
+          // 标记与方案来自同一次响应；完全缺 pairFlags 的旧版合法响应仍可展示
+          // 分配，只是不渲染任何分析标记（pairFlags=null）。
+          setResult({
+            assignment: verdict.assignment,
+            totalCost: verdict.totalCost,
+            elapsedMs: Math.round(performance.now() - started),
+            pairFlags: verdict.pairFlags,
+          });
+        } else {
+          setResult(null);
+          setExcludedHint(null);
+          setError({
+            status: resp.status,
+            code: 'BAD_RESPONSE',
+            message: `响应未通过协议验收，已拒绝采用：${verdict.reason}`,
+          });
+        }
+      } else if (resp.ok || data === null) {
+        // 200 但 status 不是 ok，或成功响应体无法解析：都属于不可采用的畸形响应
+        setResult(null);
+        setExcludedHint(null);
+        setError({
+          status: resp.status,
+          code: 'BAD_RESPONSE',
+          message:
+            data === null
+              ? '成功响应不是合法 JSON，已拒绝采用'
+              : `成功响应 status=${JSON.stringify(data.status)} 不是 ok，已拒绝采用`,
         });
       } else {
         // 两类失败（422 / 409）都清除旧方案
         setResult(null);
+        setExcludedHint(null);
         setError({
           status: resp.status,
           code: data?.error || 'ERROR',
@@ -103,11 +131,12 @@ export default function App() {
       }
     } catch (err) {
       setResult(null);
+      setExcludedHint(null);
       setError({ status: 0, code: 'NETWORK_ERROR', message: `网络错误：${err.message}` });
     } finally {
       setLoading(false);
     }
-  }, [matrix]);
+  }, [matrix, n]);
 
   // 排除方案中的一个配对：该格设为禁配（null），经同一接口立即重算。
   const excludePair = useCallback(
