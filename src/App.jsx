@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useCallback } from 'react';
 import MatrixGrid from './components/MatrixGrid.jsx';
+import { validateSolveResponse } from './validateSolution.js';
 
 const MAX_N = 400;
 const MAX_COST = 1_000_000_000_000;
@@ -84,14 +85,27 @@ export default function App() {
       });
       const data = await resp.json().catch(() => null);
       if (resp.ok && data && data.status === 'ok') {
-        // 标记与方案来自同一次响应；缺字段（异常/旧服务）时不臆造，整体不展示标记。
-        const pairFlags = Array.isArray(data.pairFlags) ? data.pairFlags : null;
-        setResult({
-          assignment: data.assignment,
-          totalCost: data.totalCost,
-          elapsedMs: Math.round(performance.now() - started),
-          pairFlags,
-        });
+        // 成功响应也要先过校验（代理/缓存/滚动升级中的旧服务都可能返回
+        // 不属于当前矩阵或无法复算的数据）：身份 n、assignment 排列结构、
+        // 禁配格、totalCost 精确复算、pairFlags 与本次配对完整对应。
+        // 任何一项不合格都不得成为可操作方案：清除旧方案与旧高亮，报协议错误。
+        const verdict = validateSolveResponse(data, costs);
+        if (!verdict.ok) {
+          setResult(null);
+          setError({
+            status: resp.status,
+            code: 'PROTOCOL_ERROR',
+            message: `求解响应未通过校验：${verdict.reason}`,
+          });
+        } else {
+          // pairFlags 为 null 表示旧版服务未提供标记：展示分配但不臆造标记。
+          setResult({
+            assignment: verdict.assignment,
+            totalCost: verdict.totalCost,
+            elapsedMs: Math.round(performance.now() - started),
+            pairFlags: verdict.pairFlags,
+          });
+        }
       } else {
         // 两类失败（422 / 409）都清除旧方案
         setResult(null);
@@ -228,7 +242,7 @@ export default function App() {
               : `${error.status || ''} ${error.code}`.trim()}
           </strong>
           <span>{error.message}</span>
-          {excludedHint && (
+          {excludedHint && error.code === 'NO_PERFECT_ASSIGNMENT' && (
             <span className="hint">
               （已排除探针 {excludedHint.i + 1} → 测试座 {excludedHint.j + 1}，该替代问题无完美匹配）
             </span>

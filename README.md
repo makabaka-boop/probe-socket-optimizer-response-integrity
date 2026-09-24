@@ -16,12 +16,15 @@ server/
   server.js       # Fastify：POST /api/solve + 生产环境静态托管
 src/
   App.jsx                  # 页面：编辑、请求锁定、方案展示、排除重算、本地复算、必然/可替换高亮
+  validateSolution.js      # 成功响应校验：n 身份、assignment 排列、禁配格、totalCost 复算、pairFlags 完整对应
   components/MatrixGrid.jsx  # 虚拟化 n×n 矩阵（n=400 流畅）
 test/
   hungarian.test.js  # 随机小矩阵 n! 穷举核对 + Hall 无解 + 大数精度
   mandatory.test.js  # 独立穷举最优集合预言机：唯一最优/同价多解/禁配/断开图/零价/重复代价
   api.test.js        # HTTP：200/409/422 + pairFlags 同次返回 + n=400 三秒性能
   app.test.jsx       # 页面：锁定编辑、编辑清旧方案、排除重算、标记同次更新/失败清除
+  validateSolution.test.js     # 响应校验纯函数：短数组/重复列/越界列/禁配/费用/n 不符/畸形标记
+  responseValidation.test.jsx  # 页面级伪造畸形成功响应：稳定协议错误、结果清理、矩阵零误标、旧版兼容
 verify/
   wait-http.mjs      # verify 容器等待 web 健康
 Dockerfile           # web：Vite 构建 → Fastify 托管
@@ -138,6 +141,14 @@ npm run build      # 产出 dist/，由 Fastify 生产托管
 
 - 请求进行中：矩阵格、规模、预设、提交按钮全部禁用（锁定编辑与提交）。
 - 请求结束后任何编辑（改格、改尺寸、预设）立即清除旧方案、错误与必然标记。
+- 成功响应上屏前逐条校验（防代理/缓存/滚动升级中的旧服务返回脏数据）：
+  响应 `n` 必须等于当前矩阵规模；`assignment` 必须是长度 n、列不重复、
+  不越界、不命中禁配格的合法排列；`totalCost` 必须是非负安全整数且与
+  按当前矩阵逐项复算的总价精确相等；`pairFlags` 字段一旦存在，必须是长度 n
+  且每项 `{ forced: boolean, alternatives: 0..n-1 }` 并满足
+  `forced ⇔ alternatives===0`。任何一项不符都按 `PROTOCOL_ERROR` 处理：
+  清除旧方案与旧高亮、不允许继续排除，绝不展示无法复算的“方案”。
+  完全缺少 `pairFlags` 的旧版合法响应仍展示分配与总价，仅不显示分析标记。
 - 每个配对可点“排除此配对”：该格被置为禁配（✕），经同一 `/api/solve` 重算，
   展示替代最优方案**并对新展示配对重新分析**（不沿用排除前的标记）；
   若替代问题无解则显示 409 并清除旧方案与标记。
